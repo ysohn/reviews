@@ -1,0 +1,126 @@
+---
+title: "Diagnostics"
+output:
+  html_document:
+    df_print: paged
+---
+
+
+```{r}
+library(NetworkChange)
+require(foreach)
+require(doSNOW)
+require(doRNG)
+```
+
+
+```{r}
+set.seed(11173)
+n <- 10 # number of nodes in each cluster
+Y <- MakeBlockNetworkChange(n=n, break.point = .5,
+                            base.prob=.05, block.prob=.7,
+                            T=20, type ="split")
+```
+
+```{r}
+set.seed(52253)
+chains <- 8 
+cl <- makeSOCKcluster(chains)
+registerDoSNOW(cl)
+Gr <- 200
+Yout <- list(chains)
+Yout <- foreach(i = 1:8, .packages = "NetworkChange") %dorng% {
+  algout <- NetworkChange(Y, R=2, m=1, mcmc=Gr, burnin=Gr, verbose=10, thin=1)
+  return(algout)
+}
+stopCluster(cl);
+```
+
+```{r}
+##################################################################################
+diag.out <- function(Yout){
+##################################################################################
+
+  N <- dim(Yout[[1]])[1]
+  R <- dim((attr(Yout[[1]], "U"))[[1]])[2]
+  G <- dim(as.array(attr(Yout[[1]], "Umat"))[[1]])[1]
+  T <- dim(Yout[[1]])[3]
+  m <- length((attr(Yout[[1]], "Umat")))-1
+  C <- length(Yout)
+
+  s<-uu<-us<-list();
+  for(mm in 1:(m+1)){
+    uu[[mm]] <- array(NA,c(G,C,N*(N-1)/2))
+    us[[mm]] <- array(NA,c(G,C,N*R))
+  }
+
+  for(i in 1:C){ #chains
+    print(i)
+    v <- array(array(attr(Yout[[i]], "Vmat")), c(G,R*T))
+    for(g in 1:G){ #iterations
+      for(t in 1:T){ #time
+        ugr <- u <-ugrvgugr <- ugrugr <- list()
+        for(mm in 1:(m+1)){ #states
+          u[[mm]] <- array(array(attr(Yout[[i]], "Umat"))[[mm]], c(G,N,2))
+          ugr[[mm]] <-  as.matrix(u[[mm]][g,,1:R])
+          ugrugr[[mm]] <- ugr[[mm]]%*%t(ugr[[mm]])
+          uu[[mm]][g,i,] <- array(ugrugr[[mm]][lower.tri(ugrugr[[mm]])],c(N*(N-1)/2,1))
+          us[[mm]][g,i,] <- array(as.matrix(u[[mm]][g,,1:R]) ,c(N*R,1))
+   }}}}
+
+  to_diagnose_UU <- list()
+  for(nn in 1:dim(uu[[1]])[3]){
+    for(mm in 1:(m+1)){
+      to_diagnose_UU[[nn+dim(uu[[mm]])[3]*(mm-1)]] <- uu[[mm]][,,nn]}}
+
+  to_diagnose_U <- list()
+  for(nn in 1:dim(us[[1]])[3]){
+    for(mm in 1:(m+1)){
+      to_diagnose_U[[nn+dim(us[[mm]])[3]*(mm-1)]] <- us[[mm]][,,nn]}}
+
+  to_diagnose_V <- list()
+  for(j in 1:dim(attr(Yout[[1]], "Vmat"))[2]){
+    to_diagnose_V[[j]] <- matrix(NA,G,C)
+    for(i in 1:C){
+    to_diagnose_V[[j]][,i] <- attr(Yout[[i]], "Vmat")[,j]}}
+
+  to_diagnose_s2 <- list()
+  for(mm in 1:(m+1)){
+    to_diagnose_s2[[mm]] <- matrix(NA,G,C)
+    for(i in 1:C){
+      to_diagnose_s2[[mm]][,i] <- attr(Yout[[i]], "s2mat")[[mm]]}}
+
+  rh_UU <- purrr::imap_dfr(to_diagnose_UU, function(s, name) { data.frame(par = name, Rhat = posterior::rhat(s), ess_bulk = posterior::ess_bulk(s)) })
+  rh_U <- purrr::imap_dfr(to_diagnose_U, function(s, name) { data.frame(par = name, Rhat = posterior::rhat(s), ess_bulk = posterior::ess_bulk(s)) })
+  rh_V <- purrr::imap_dfr(to_diagnose_V, function(s, name) { data.frame(par = name, Rhat = posterior::rhat(s), ess_bulk = posterior::ess_bulk(s)) })
+  rh_s2 <- purrr::imap_dfr(to_diagnose_s2, function(s, name) { data.frame(par = name, Rhat = posterior::rhat(s), ess_bulk = posterior::ess_bulk(s)) })
+
+  output <- list()
+  attr(output, "rh_UU") <- rh_UU
+  attr(output, "rh_U") <- rh_U
+  attr(output, "rh_V") <- rh_V
+  attr(output, "rh_s2") <- rh_s2
+
+  return(output)
+  }
+```
+
+```{r}
+diagres <- diag.out(Yout)
+sum(attr(diagres,'rh_U')$Rhat<1.05)/length(attr(diagres,'rh_U')$Rhat)
+sum(attr(diagres,'rh_UU')$Rhat<1.05)/length(attr(diagres,'rh_UU')$Rhat)
+sum(attr(diagres,'rh_V')$Rhat<1.05)/length(attr(diagres,'rh_V')$Rhat)
+sum(attr(diagres,'rh_s2')$Rhat<1.05)/length(attr(diagres,'rh_s2')$Rhat)
+```
+```{r}
+par(mfrow=c(2,2))
+hist(attr(diagres,'rh_U')$Rhat)
+hist(attr(diagres,'rh_UU')$Rhat)
+hist(attr(diagres,'rh_V')$Rhat)
+hist(attr(diagres,'rh_s2')$Rhat)
+```
+
+```{r}
+save.image('diag.Rdata')
+```
+
